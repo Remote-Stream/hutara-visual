@@ -3,91 +3,91 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 import {GoogleGenAI, Modality} from '@google/genai'
-import {limitFunction} from 'p-limit'
+import pLimit from 'p-limit'
 
 const timeoutMs = 193_333
 const maxRetries = 5
 const baseDelay = 1_233
 const ai = new GoogleGenAI({apiKey: process.env.API_KEY})
+const limit = pLimit(9)
 
-export default limitFunction(
-  async ({
-    model,
-    systemInstruction,
-    prompt,
-    promptImage,
-    imageOutput,
-    thinking,
-    thinkingCapable
-  }) => {
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      try {
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), timeoutMs)
-        )
+const generate = async ({
+  model,
+  systemInstruction,
+  prompt,
+  promptImage,
+  imageOutput,
+  thinking,
+  thinkingCapable
+}) => {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), timeoutMs)
+      )
 
-        const modelPromise = ai.models.generateContent({
-          model,
-          config: {
-            // systemInstruction is not supported for image models
-            ...(systemInstruction && !imageOutput ? {systemInstruction} : {}),
-            safetySettings,
-            ...(thinkingCapable && !thinking
-              ? {thinkingConfig: {thinkingBudget: 0}}
-              : {}),
-            ...(imageOutput ? {responseModalities: [Modality.IMAGE]} : {})
-          },
+      const modelPromise = ai.models.generateContent({
+        model,
+        config: {
+          // systemInstruction is not supported for image models
+          ...(systemInstruction && !imageOutput ? {systemInstruction} : {}),
+          safetySettings,
+          ...(thinkingCapable && !thinking
+            ? {thinkingConfig: {thinkingBudget: 0}}
+            : {}),
+          ...(imageOutput ? {responseModalities: [Modality.IMAGE]} : {})
+        },
 
-          contents: [
-            {
-              parts: [
-                ...(promptImage
-                  ? [
-                      {
-                        inlineData: {
-                          data: promptImage.split(',')[1],
-                          mimeType: 'image/png'
-                        }
+        contents: [
+          {
+            parts: [
+              ...(promptImage
+                ? [
+                    {
+                      inlineData: {
+                        data: promptImage.split(',')[1],
+                        mimeType: 'image/png'
                       }
-                    ]
-                  : []),
-                {text: prompt}
-              ]
-            }
-          ]
-        })
-
-        const res = await Promise.race([modelPromise, timeoutPromise])
-
-        if (imageOutput) {
-          for (const part of res.candidates[0].content.parts) {
-            if (part.inlineData) {
-              return 'data:image/png;base64,' + part.inlineData.data
-            }
+                    }
+                  ]
+                : []),
+              {text: prompt}
+            ]
           }
-          throw new Error('No image data in response')
-        } else {
-          return res.text
-        }
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          return
-        }
+        ]
+      })
 
-        if (attempt === maxRetries - 1) {
-          throw error
-        }
+      const res = await Promise.race([modelPromise, timeoutPromise])
 
-        const delay = baseDelay * 2 ** attempt
-        await new Promise(res => setTimeout(res, delay))
-        console.warn(
-          `Attempt ${attempt + 1} failed, retrying after ${delay}ms...`
-        )
+      if (imageOutput) {
+        for (const part of res.candidates[0].content.parts) {
+          if (part.inlineData) {
+            return 'data:image/png;base64,' + part.inlineData.data
+          }
+        }
+        throw new Error('No image data in response')
+      } else {
+        return res.text
       }
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        return
+      }
+
+      if (attempt === maxRetries - 1) {
+        throw error
+      }
+
+      const delay = baseDelay * 2 ** attempt
+      await new Promise(res => setTimeout(res, delay))
+      console.warn(
+        `Attempt ${attempt + 1} failed, retrying after ${delay}ms...`
+      )
     }
-  },
-  {concurrency: 9}
-)
+  }
+}
+
+export default args => limit(() => generate(args))
 
 const safetySettings = [
   'HARM_CATEGORY_HATE_SPEECH',
